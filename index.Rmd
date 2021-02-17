@@ -1,0 +1,346 @@
+---
+title: "Qualitative Activity Recognition of Weight Lifting Exercises"
+author: "Oleg Kufirin"
+date: "17/02/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, message = FALSE)
+```
+
+## Project objectives
+
+One thing that people regularly do is quantify how  much of a particular activity they do, but they rarely quantify how well they do it. In this project, our goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants.
+
+The goal of this project is to predict the manner in which they did
+the exercise. This is the "classe" variable in the training set.
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+## System setup and libraries
+
+```{r, message = FALSE}
+setwd("D:/Data Science Specialisation/Practical Machine Learning/4/Course Project/")
+library(caret)
+library(xlsx)
+```
+
+## Getting the data
+
+First, we will download the datasets.
+```{r, cache.lazy=TRUE}
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "training.csv")
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "test.csv")
+```
+Then, load the datasets into R treating empty values as NA.
+```{r}
+training_org <- read.csv("training.csv", header = T, na.strings = c("", "NA"))
+test_org<- read.csv("test.csv", header = T, na.strings = c("", "NA"))
+```
+Checking dimensions of the datasets and names of the variables.
+```{r}
+dim(training_org)
+dim(test_org)
+names(training_org)
+```
+As it can be seen the datasets have significant number of input parameters - `r dim(training_org)[2] - 1`. The last column is the outcome varaible.
+
+## Exploring and cleaning the data
+
+Now, we have a look at all possible values of the outcome varaible and assess whether the dataset is balanced or not.
+```{r fig.height = 3, fig.width = 5, fig.align = "left"}
+round(table(training_org$classe) / dim(training_org)[1] * 100, 2)
+barplot(round(table(training_org$classe) / dim(training_org)[1] * 100, 2))
+```
+
+There are `r length(table(training_org$classe))` possible classes and the dataset seems reasonably balanced.
+
+Checking the number of NAs for each column.
+```{r}
+table(colSums(is.na(training_org)))
+```
+All columns have either `r names(table(colSums(is.na(training_org))))[1]` or `r names(table(colSums(is.na(training_org))))[2]` NAs. The latter seems to be a significant proportion of missing values (`r round(as.numeric(names(table(colSums(is.na(training_org))))[2])/dim(training_org)[1] * 100,0)`%), hence `r table(colSums(is.na(training_org)))[[2]]` columns can be excluded from the dataset.
+
+Extract column names with NAs and exclude them from the training and the test sets.
+```{r}
+NA_cols <- colnames(training_org)[colSums(is.na(training_org)) > 0]
+training <- training_org[, !(names(training_org) %in% NA_cols)]
+test <- test_org[, !(names(test_org) %in% NA_cols)]
+
+```
+
+Check names of the remaining columns.
+```{r}
+colnames(training)
+```
+
+If we look closely at the first 7 variables, we will see that they are metadata and time-stamps.
+```{r}
+head(training[, 1:7])
+```
+The first column is an observation number. The second column is a user name (person who did the exercises). Columns 3 to 5 are time and date stamps. Columns 6 and 7 represent information about windows of readings. From common sense knowledge they have no relation to quality of performing exercise at particular point in time, unless a specific research hypothesis is tested (i.e. how time of the day affects quality of exercises). Hence, in this project we assume that only readings from the sensors and their derivations will be used to build a predictive model.
+
+Following the logic above we will remove the first 7 columns.
+```{r}
+redundant_cols <- colnames(training)[1:7]
+training <- training[, !(names(training) %in% redundant_cols)]
+test <- test[, !(names(test) %in% redundant_cols)]
+```
+
+Convert the outcome to a factor varaible
+```{r}
+training$classe <- as.factor(training$classe)
+str(training$classe)
+```
+
+Now we have datasets of the following dimensions.
+```{r}
+dim(training)
+dim(test)
+```
+
+We can also check the correlation matrix, but since the number of parameters is large it is better to write it out to an Excel file.
+```{r, cache.lazy=TRUE}
+correlationMatrix <- cor(training[,1:length(training)-1])
+write.xlsx(correlationMatrix, "correlationMatrix.xlsx", sheetName = "Corr", col.names = T, row.names = T, append = F)
+```
+
+## Building predictive models
+
+### Rationale
+
+The given problem is a classification problem with 4 classes, hence a wide range of ML algorithms can be applied. We will use **caret** package for model building. For all models we will use a 5 fold cross-validation to estimate an out of sample error. It is a reasonable trade-off since the training dataset is fairly large in breadth and depth to process on a home computer and a 10 fold CV would slow down training significantly. We will use Accuracy metric reported by caret's model to pick the best performing model. Error rate can be thought as 1 - Accuracy. We will also measure and take into consideration training time.
+
+The number of predictors in the dataset is quite large, so some techniques to reduce the number of dimensions can be applied.
+When training we will use different combinations of filtering out highly correlated variables (by varying cutoff parameter) and principal component analysis (by varying thresh parameter representing retained variance). Both can specified in **train** function from **caret** library.
+
+In all training scenarios the data will be scaled, centred and checked for near-zero varaince.
+
+```{r}
+set.seed(7)
+```
+
+### Penalized Multinomial Regression
+```{r, eval=FALSE}
+trControl <- trainControl(method = "cv", number = 5)
+system.time(multinomReg_model <- train(classe ~ .,
+                                        trControl = trControl,
+                                        preProcess = c("center", "scale", "nzv"),
+                                        method = "multinom",
+                                        data = training, trace = FALSE))
+```
+| Correlation, cutoff= | PCA, thresh= | Accuracy | Training Time, sec |
+| :---                 |    :----:    |  :----:  |               ---: |
+| -                    | -            | **0.7300**   | 170.19          |
+| 0.75                 | 0.9          | 0.5004   | 114.90              |
+| -                    | 0.95         | 0.5329   | 132.92              |
+| -                    | 0.8          | 0.4762   |  86.72              |
+| 0.9                  | -            | 0.7016   | 149.28              |
+| 0.75                 | -            | 0.5908   | 127.81              |
+| 0.5                  | -            | 0.4999   | 110.90              |
+
+This method showed moderate Accuracy of 0.73 with moderate training time 170 sec..
+
+### kNN
+```{r, eval=FALSE}
+trControl <- trainControl(method = "cv", number = 5)
+system.time(knn_model <- train(classe ~ .,
+                                trControl = trControl,
+                                preProcess = c("center", "scale", "nzv"),
+                                method = "knn",
+                                tuneGrid = expand.grid(k = 1:1),
+                                data = training))
+```
+| Correlation, cutoff= | PCA, thresh= | Accuracy | Training Time, sec |
+| :---                 |    :----:    |  :----:  |               ---: |
+| -                    | -            | **0.9925**   | 49.30          |
+| 0.75                 | 0.9          | 0.9886   | 19.19              |
+| -                    | 0.95         | 0.9892   | 24.17              |
+| -                    | 0.8          | 0.9810   | 17.40              |
+| 0.9                  | -            | 0.9912   | 41.16              |
+| 0.75                 | -            | 0.9886   | 27.45              |
+| 0.5                  | -            | 0.9835   | 19.83              |
+
+Experiments showed that kNN algorithm works best with tuning parameter k=1 (not shown here).
+This method has very high Accuracy of 0.9925 with reasonably fast training time 49.30 sec..
+
+### CART
+```{r, eval=FALSE}
+trControl <- trainControl(method = "cv", number = 5,
+                          preProcOptions = list(cutoff = 0.5, thresh = 0.8))
+system.time(cart_model <- train(classe ~ .,
+                                trControl = trControl,
+                                preProcess = c("center", "scale", "nzv"),
+                                method = "rpart",
+                                data = training))
+```
+| Correlation, cutoff= | PCA, thresh= | Accuracy | Training Time, sec |
+| :---                 | :----:       | :----:   |          ---:      |
+| -                    | -            | **0.5042**   | 14.98          |
+| 0.75                 | 0.9          | 0.3344   | 17.61              |
+| -                    | 0.95         | 0.3933   | 20.04              |
+| -                    | 0.8          | 0.3632   | 18.55              |
+| 0.9                  | -            | 0.4732   | 19.22              |
+| 0.75                 | -            | 0.5033   | 17.20              |
+| 0.5                  | -            | 0.4638   | 19.17              |
+
+This method showed fast training time, but poor performance in terms of accuracy.
+
+### Bagged CART
+```{r, eval=FALSE}
+trControl <- trainControl(method = "cv", number = 5,
+                          preProcOptions = list(cutoff = 0.9))
+system.time(baggedCART_model <- train(classe ~ .,
+                                trControl = trControl,
+                                preProcess = c("center", "scale", "nzv", "corr"),
+                                method = "treebag",
+                                data = training))
+```
+| Correlation, cutoff= | PCA, thresh= | Accuracy | Training Time, sec |
+| :---                 | :----:       | :----:   |          ---:      |
+| -                    | -            | 0.9871   | 99.34              |
+| 0.75                 | 0.9          | 0.9509   | 59.69              |
+| -                    | 0.95         | 0.9633   | 73.15              |
+| -                    | 0.8          | 0.9459   | 46.94              |
+| 0.9                  | -            | **0.9881**   | 92.61              |
+| 0.75                 | -            | 0.9800   | 65.89              |
+| 0.5                  | -            | 0.9604   | 27.84              |
+
+This method showed very high Accuracy and reasonably short training time, however the time performance is slightly worse than kNN.
+
+### Random Forest
+```{r, eval=FALSE}
+trControl <- trainControl(method = "cv", number = 5)
+system.time(rf_model <- train(classe ~ .,
+                                trControl = trControl,
+                                preProcess = c("center", "scale", "nzv"),
+                                method = "rf",
+                                tuneGrid = expand.grid(mtry = 1:1),
+                                data = training))
+```
+| Correlation, cutoff= | PCA, thresh= | Accuracy | Training Time, sec  |
+| :---                 | :----:       | :----:   |          ---:       |
+| -                    | -            | **0.9909**   | 306.75              |
+| 0.75                 | 0.9          | 0.9728   | 132.52              |
+| -                    | 0.95         | 0.9772   | 183.72              |
+| -                    | 0.8          | 0.9635   |  93.36              |
+| 0.9                  | -            | 0.9900   | 265.90              |
+| 0.75                 | -            | 0.9891   | 191.56              |
+| 0.5                  | -            | 0.9789   | 139.48              |
+
+This method showed very high Accuracy comparable with kNN but the training time was much larger.
+
+### Parallel Random Forest
+```{r, eval=FALSE}
+trControl <- trainControl(method = "cv", number = 5)
+system.time(parRF_model <- train(classe ~ .,
+                                 trControl = trControl,
+                                 preProcess = c("center", "scale", "nzv"),
+                                 method = "parRF",
+                                 data = training))
+```
+| Correlation, cutoff= | PCA, thresh= | Accuracy | Training Time, sec  |
+| :---                 | :----:       | :----:   |          ---:       |
+| -                    | -            | **0.9944**   | 1126.83              |
+| -                    | 0.8          | 0.9666   |  321.48              |
+| 0.9                  | -            | 0.9932   | 1101.12              |
+| 0.75                 | -            | 0.9930   |  658.35              |
+| 0.2                  | -            | 0.9387   |  224.54              |
+
+This method is slightly superior to kNN but had significantly larger training time.
+
+### High Dimensional Discriminant Analysis
+```{r, eval=FALSE}
+trControl <- trainControl(method = "cv", number = 5,
+                          preProcOptions = list(cutoff = 0.85,))
+system.time(hdda_model <- train(classe ~ .,
+                                trControl = trControl,
+                                preProcess = c("center", "scale", "nzv", "corr"),
+                                method = "hdda",
+                                data = training))
+```
+| Correlation, cutoff= | PCA, thresh= | Accuracy | Training Time, sec  |
+| :---                 | :----:       | :----:   |          ---:       |
+| -                    | -            | 0.7264   | 30.06              |
+| 0.75                 | 0.9          | 0.6659   | 29.56              |
+| -                    | 0.95         | 0.6825   | 33.14              |
+| -                    | 0.8          | 0.5704   | 31.52              |
+| 0.95                 | -            | 0.7572   | 31.69              |
+| 0.9                  | -            | 0.7829   | 30.33              |
+| 0.85                 | -            | **0.7872**  | 29.96              |
+| 0.8                  | -            | 0.7824   | 30.19              |
+| 0.75                 | -            | 0.7377   | 27.85              |
+| 0.5                  | -            | 0.6886   | 26.75              |
+
+This method showed very fast training time but moderate Accuracy.
+
+### Naive Bayes
+```{r, eval=FALSE}
+trControl <- trainControl(method = "cv", number = 5,
+                          preProcOptions = list(cutoff = 0.9))
+system.time(nb_model <- train(classe ~ .,
+                                trControl = trControl,
+                                preProcess = c("center", "scale", "nzv", "corr"),
+                                method = "nb",
+                                data = training))
+```
+| Correlation, cutoff= | PCA, thresh= | Accuracy | Training Time, sec  |
+| :---                 | :----:       | :----:   |          ---:       |
+| -                    | -            | 0.7441   | 205.85              |
+| 0.75                 | 0.9          | 0.6079   |  92.22              |
+| -                    | 0.95         | 0.6442   | 114.59              |
+| -                    | 0.8          | 0.5590   |  72.03              |
+| 0.95                 | -            | 0.7515   | 209.41              |
+| 0.9                  | -            | **0.7569**   | 173.68              |
+| 0.75                 | -            | 0.7389   | 135.23              |
+| 0.5                  | -            | 0.6694   | 101.38              |
+| 0.2                  | -            | 0.5234   |  49.91              |
+
+This method showed moderate Accuracy and moderate training time.
+
+### Linear Discriminant Analysis
+```{r, eval=FALSE}
+trControl <- trainControl(method = "cv", number = 5)
+system.time(lda_model <- train(classe ~ .,
+                              trControl = trControl,
+                              preProcess = c("center", "scale", "nzv"),
+                              method = "lda",
+                              data = training))
+```
+| Correlation, cutoff= | PCA, thresh= | Accuracy | Training Time, sec  |
+| :---                 | :----:       | :----:   |          ---:       |
+| -                    | -            | **0.7018**   | 11.78              |
+| 0.75                 | 0.9          | 0.5188   | 11.59              |
+| -                    | 0.95         | 0.5272   | 11.81              |
+| -                    | 0.8          | 0.4673   | 12.11              |
+| 0.95                 | -            | 0.6852   | 12.77              |
+| 0.9                  | -            | 0.6776   | 11.96              |
+| 0.75                 | -            | 0.5838   | 11.25              |
+| 0.5                  | -            | 0.4976   | 10.61              |
+
+This method showed very fast training time but moderate Accuracy.
+
+## Model selection
+The following algorithms showed outstanding performance with Accuracy larger than 0.99: kNN, Bagged CART, Random Forest,
+Parallel Random Forest. Our method of choice will be kNN since it had the lowest training time of 49.30 sec..
+```{r, eval=TRUE, cache.lazy=TRUE}
+trControl <- trainControl(method = "cv", number = 5)
+knn_model <- train(classe ~ .,
+                        trControl = trControl,
+                        preProcess = c("center", "scale", "nzv"),
+                        method = "knn",
+                        tuneGrid = expand.grid(k = 1:1),
+                        data = training)
+```
+Now, we can make prediction on the test set of 20 instances.
+```{r}
+prediction <- data.frame(test$problem_id, predict(knn_model, 
+                                                  test[, -ncol(test)]))
+names(prediction) <- c("ID", "knn_Prd")
+prediction
+```
+
+This output matched the expected output of the quiz.
