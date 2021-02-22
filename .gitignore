@@ -127,3 +127,12 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+.Rproj.user
+
+# Oleg defined
+.Rhistory
+index_cache/
+index_files/
+*.csv
+*.Rproj
+README.html
