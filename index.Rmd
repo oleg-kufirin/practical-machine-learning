@@ -345,3 +345,5 @@ prediction
 
 This output matched the expected output of the quiz.
 
+**Note:** out-of-sample error can be thought as (1-accuracy) and all the above
+mentioned considerations remain valid.
