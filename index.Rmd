@@ -23,7 +23,6 @@ Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible t
 ## System setup and libraries
 
 ```{r, message = FALSE}
-setwd("D:/Data Science Specialisation/Practical Machine Learning/4/Course Project/")
 library(caret)
 library(xlsx)
 ```
@@ -342,8 +341,6 @@ prediction <- data.frame(test$problem_id, predict(knn_model,
 names(prediction) <- c("ID", "knn_Prd")
 prediction
 ```
-
-This output matched the expected output of the quiz.
 
 **Note:** out-of-sample error can be thought as (1-accuracy) and all the above
 mentioned considerations remain valid.
